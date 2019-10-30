@@ -39,6 +39,11 @@ const Float64x8 = Float64x{8}
 @inline MultiFloat{T,N}(x::T) where {T<:AF,N} =
     MultiFloat{T,N}((x, ntuple(_ -> zero(T), N - 1)...))
 
+@inline MultiFloat{T,N}(x::MultiFloat{T,M}) where {T<:AbstractFloat,M,N} =
+    MultiFloat{T,N}((
+        ntuple(i -> x.x[i], min(M, N))...,
+        ntuple(_ -> zero(T), max(N - M, 0))...))
+
 # Values of the types Bool, Int8, UInt8, Int16, UInt16, Float16, Int32, UInt32,
 # and Float32 can be converted losslessly to a single Float64, which has 53
 # bits of integer precision.
@@ -180,46 +185,54 @@ Base.promote_rule(::Type{Float64x{N}}, ::Type{Float32}) where {N} = Float64x{N}
     end
 end
 
-function Base.show(io::IO, x::MultiFloat{T,N}) where {T<:AF,N}
+function call_normalized(callback, x::MultiFloat{T,N}) where {T<:AF,N}
     x = renormalize(x)
     if !isfinite(x.x[1])
-        show(io, x.x[1])
+        callback(x.x[1])
     else
         i = N
         while (i > 0) && iszero(x.x[i])
             i -= 1
         end
         if iszero(i)
-            show(io, zero(T))
+            callback(zero(T))
         else
-            show(io, setprecision(() -> BigFloat(x),
-                precision(T) + exponent(x.x[1]) - exponent(x.x[i])))
+            setprecision(() -> callback(BigFloat(x)),
+                precision(T) + exponent(x.x[1]) - exponent(x.x[i]))
         end
     end
 end
 
+function Base.show(io::IO, x::MultiFloat{T,N}) where {T<:AF,N}
+    call_normalized(y -> show(io, y), x)
+end
+
 ################################################################################
 
-@inline Base.:(==)(x::MF{T,1}, y::MF{T,1}) where {T<:AF} = (x.x[1] == y.x[1])
-@inline Base.:(!=)(x::MF{T,1}, y::MF{T,1}) where {T<:AF} = (x.x[1] != y.x[1])
-@inline Base.:(< )(x::MF{T,1}, y::MF{T,1}) where {T<:AF} = (x.x[1] <  y.x[1])
-@inline Base.:(> )(x::MF{T,1}, y::MF{T,1}) where {T<:AF} = (x.x[1] >  y.x[1])
-@inline Base.:(<=)(x::MF{T,1}, y::MF{T,1}) where {T<:AF} = (x.x[1] <= y.x[1])
-@inline Base.:(>=)(x::MF{T,1}, y::MF{T,1}) where {T<:AF} = (x.x[1] >= y.x[1])
+# Thanks to Greg Plowman (https://github.com/GregPlowman) for suggesting
+# implementations of Printf.fix_dec and Printf.ini_dec for @printf support.
 
-# TODO: Add accurate comparison operators. Sloppy stop-gap operators for now.
-@inline _eq(x::MF{T,N}, y::MF{T,N}) where {T<:AF,N} =
-    (x.x[1] == y.x[1]) & (x.x[2] == y.x[2])
-@inline _ne(x::MF{T,N}, y::MF{T,N}) where {T<:AF,N} =
-    (x.x[1] != y.x[1]) | (x.x[2] != y.x[2])
-@inline _lt(x::MF{T,N}, y::MF{T,N}) where {T<:AF,N} =
-    (x.x[1] < y.x[1]) | ((x.x[1] == y.x[1]) & (x.x[2] < y.x[2]))
-@inline _gt(x::MF{T,N}, y::MF{T,N}) where {T<:AF,N} =
-    (x.x[1] > y.x[1]) | ((x.x[1] == y.x[1]) & (x.x[2] > y.x[2]))
-@inline _le(x::MF{T,N}, y::MF{T,N}) where {T<:AF,N} =
-    (x.x[1] < y.x[1]) | ((x.x[1] == y.x[1]) & (x.x[2] <= y.x[2]))
-@inline _ge(x::MF{T,N}, y::MF{T,N}) where {T<:AF,N} =
-    (x.x[1] > y.x[1]) | ((x.x[1] == y.x[1]) & (x.x[2] >= y.x[2]))
+import Printf: fix_dec, ini_dec
+
+if VERSION < v"1.1"
+
+    fix_dec(out, x::MultiFloat{T,N}, flags::String, width::Int, precision::Int, c::Char) where {T<:AF,N} =
+        call_normalized(d -> fix_dec(out, BigFloat(d), flags, width, precision, c), x)
+
+    ini_dec(out, x::MultiFloat{T,N}, ndigits::Int, flags::String, width::Int, precision::Int, c::Char) where {T<:AF,N} =
+        call_normalized(d -> ini_dec(out, BigFloat(d), ndigits, flags, width, precision, c), x)
+
+else
+
+    fix_dec(out, x::MultiFloat{T,N}, flags::String, width::Int, precision::Int, c::Char, digits) where {T<:AF,N} =
+        call_normalized(d -> fix_dec(out, BigFloat(d), flags, width, precision, c, digits), x)
+
+    ini_dec(out, x::MultiFloat{T,N}, ndigits::Int, flags::String, width::Int, precision::Int, c::Char, digits) where {T<:AF,N} =
+        call_normalized(d -> ini_dec(out, BigFloat(d), ndigits, flags, width, precision, c, digits), x)
+
+end
+
+################################################################################
 
 @inline Base.:(==)(x::MF{T,N}, y::MF{T,N}) where {T<:AF,N} = _eq(renormalize(x), renormalize(y))
 @inline Base.:(!=)(x::MF{T,N}, y::MF{T,N}) where {T<:AF,N} = _ne(renormalize(x), renormalize(y))
@@ -360,6 +373,13 @@ end
 @inline unsafe_sqrt(x::Float64) = Base.sqrt_llvm(x)
 @inline unsafe_sqrt(x::T) where {T <: Real} = sqrt(x)
 
+@inline Base.:(==)(x::MF{T,1}, y::MF{T,1}) where {T<:AF} = (x.x[1] == y.x[1])
+@inline Base.:(!=)(x::MF{T,1}, y::MF{T,1}) where {T<:AF} = (x.x[1] != y.x[1])
+@inline Base.:(< )(x::MF{T,1}, y::MF{T,1}) where {T<:AF} = (x.x[1] <  y.x[1])
+@inline Base.:(> )(x::MF{T,1}, y::MF{T,1}) where {T<:AF} = (x.x[1] >  y.x[1])
+@inline Base.:(<=)(x::MF{T,1}, y::MF{T,1}) where {T<:AF} = (x.x[1] <= y.x[1])
+@inline Base.:(>=)(x::MF{T,1}, y::MF{T,1}) where {T<:AF} = (x.x[1] >= y.x[1])
+
 @inline Base.:+(a::MF{T,1}, b::MF{T,1}) where {T<:AF} = MF{T,1}(a.x[1] + b.x[1])
 @inline Base.:+(a::MF{T,1}, b::T      ) where {T<:AF} = MF{T,1}(a.x[1] + b     )
 @inline Base.:*(a::MF{T,1}, b::MF{T,1}) where {T<:AF} = MF{T,1}(a.x[1] * b.x[1])
@@ -369,6 +389,12 @@ end
 
 function use_clean_multifloat_arithmetic(n::Integer=8)
     for i = 2 : n
+        eval(multifloat_eq_func(       i              ))
+        eval(multifloat_ne_func(       i              ))
+        eval(multifloat_lt_func(       i              ))
+        eval(multifloat_gt_func(       i              ))
+        eval(multifloat_le_func(       i              ))
+        eval(multifloat_ge_func(       i              ))
         eval(two_pass_renorm_func(     i, sloppy=false))
         eval(multifloat_add_func(      i, sloppy=false))
         eval(multifloat_float_add_func(i, sloppy=false))
@@ -384,6 +410,12 @@ end
 
 function use_sloppy_multifloat_arithmetic(n::Integer=8)
     for i = 2 : n
+        eval(multifloat_eq_func(       i             ))
+        eval(multifloat_ne_func(       i             ))
+        eval(multifloat_lt_func(       i             ))
+        eval(multifloat_gt_func(       i             ))
+        eval(multifloat_le_func(       i             ))
+        eval(multifloat_ge_func(       i             ))
         eval(two_pass_renorm_func(     i, sloppy=true))
         eval(multifloat_add_func(      i, sloppy=true))
         eval(multifloat_float_add_func(i, sloppy=true))
@@ -399,6 +431,12 @@ end
 
 function use_very_sloppy_multifloat_arithmetic(n::Integer=8)
     for i = 2 : n
+        eval(multifloat_eq_func(       i             ))
+        eval(multifloat_ne_func(       i             ))
+        eval(multifloat_lt_func(       i             ))
+        eval(multifloat_gt_func(       i             ))
+        eval(multifloat_le_func(       i             ))
+        eval(multifloat_ge_func(       i             ))
         eval(one_pass_renorm_func(     i, sloppy=true))
         eval(multifloat_add_func(      i, sloppy=true))
         eval(multifloat_float_add_func(i, sloppy=true))
