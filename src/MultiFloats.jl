@@ -185,6 +185,8 @@ Base.promote_rule(::Type{Float64x{N}}, ::Type{Float32}) where {N} = Float64x{N}
     end
 end
 
+@inline renormalize(x::T) where {T<:Number} = x
+
 function call_normalized(callback, x::MultiFloat{T,N}) where {T<:AF,N}
     x = renormalize(x)
     if !isfinite(x.x[1])
@@ -268,8 +270,12 @@ end
 ################################################################################
 
 @inline Base.precision(::Type{MF{T,N}}) where {T<:AF,N} = N * precision(T)
-@inline Base.floatmin( ::Type{MF{T,N}}) where {T<:AF,N} = MF{T,N}(floatmin(T))
-@inline Base.floatmax( ::Type{MF{T,N}}) where {T<:AF,N} = MF{T,N}(floatmax(T))
+
+@inline Base.floatmin(::Type{MF{T,N}}) where {T<:AF,N} = MF{T,N}(floatmin(T))
+@inline Base.floatmax(::Type{MF{T,N}}) where {T<:AF,N} = MF{T,N}(floatmax(T))
+
+@inline Base.typemin(::Type{MF{T,N}}) where {T<:AF,N} = MF{T,N}(ntuple(_ -> typemin(T), N))
+@inline Base.typemax(::Type{MF{T,N}}) where {T<:AF,N} = MF{T,N}(ntuple(_ -> typemax(T), N))
 
 @inline Base.exponent(   x::MF{T,N}) where {T<:AF,N} = exponent(   renormalize(x).x[1])
 @inline Base.signbit(    x::MF{T,N}) where {T<:AF,N} = signbit(    renormalize(x).x[1])
@@ -277,6 +283,16 @@ end
 @inline Base.isfinite(   x::MF{T,N}) where {T<:AF,N} = isfinite(   renormalize(x).x[1])
 @inline Base.isinf(      x::MF{T,N}) where {T<:AF,N} = isinf(      renormalize(x).x[1])
 @inline Base.isnan(      x::MF{T,N}) where {T<:AF,N} = isnan(      renormalize(x).x[1])
+
+@inline function Base.nextfloat(x::MF{T,N}) where {T<:AF,N}
+    y = renormalize(x)
+    MF{T,N}((ntuple(i -> y.x[i], N - 1)..., nextfloat(y.x[N])))
+end
+
+@inline function Base.prevfloat(x::MF{T,N}) where {T<:AF,N}
+    y = renormalize(x)
+    MF{T,N}((ntuple(i -> y.x[i], N - 1)..., prevfloat(y.x[N])))
+end
 
 import LinearAlgebra: floatmin2
 @inline floatmin2(::Type{MF{T,N}}) where {T<:AF,N} =
@@ -385,7 +401,16 @@ end
 @inline Base.:*(a::MF{T,1}, b::MF{T,1}) where {T<:AF} = MF{T,1}(a.x[1] * b.x[1])
 @inline Base.:*(a::MF{T,1}, b::T      ) where {T<:AF} = MF{T,1}(a.x[1] * b     )
 @inline Base.:/(a::MF{T,1}, b::MF{T,1}) where {T<:AF} = MF{T,1}(a.x[1] / b.x[1])
-@inline Base.sqrt(x::MF{T,1}          ) where {T<:AF} = MF{T,1}(unsafe_sqrt(x.x[1]))
+@inline _sqrt(  x::MF{T,1}            ) where {T<:AF} = MF{T,1}(unsafe_sqrt(x.x[1]))
+
+@inline function Base.sqrt(x::MF{T,N}) where {T<:AF,N}
+    x = renormalize(x)
+    if iszero(x)
+        return x
+    else
+        return _sqrt(x)
+    end
+end
 
 function use_clean_multifloat_arithmetic(n::Integer=8)
     for i = 2 : n
@@ -459,6 +484,8 @@ end
 @inline Base.:-(x::MF{T,N}) where {T<:AF,N} = MF{T,N}(ntuple(i -> -x.x[i], N))
 @inline Base.:-(x::MF{T,N}, y::MF{T,N}) where {T<:AF,N} = x + (-y)
 @inline Base.:-(x::MF{T,N}, y::T      ) where {T<:AF,N} = x + (-y)
+
+@inline Base.hypot(x::MF{T,N}, y::MF{T,N}) where {T<:AF,N} = sqrt(x*x + y*y)
 
 ################################################################################
 
